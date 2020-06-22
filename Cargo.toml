@@ -2,21 +2,37 @@
 name = "zentui"
 version = "0.1.0"
 authors = ["Marius Cobzarenco <marius@reinfer.io>"]
+description = "Zentui is a Zenhub + Github client for the terminal."
+repository = "https://github.com/mcobzarenco/zentui"
+license = "MIT"
+keywords = ["event", "color", "cli", "input", "terminal"]
+readme = "README.md"
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.31"
 clap = "3.0.0-beta.1"
+dirs = "2.0.2"
+edit = "0.1.1"
 flexi_logger = "0.15.4"
+futures = "0.3.5"
+im = { version = "15.0.0", features = ["serde"] }
+keyring = "0.9.0"
 log = "0.4.8"
 once_cell = "1.4.0"
-reqwest = { version = "0.10.6", default-features = false, features = ["blocking", "gzip", "json", "rustls-tls"] }
+palette = "0.5.0"
+reqwest = { version = "0.10.6", default-features = false, features = ["gzip", "json", "rustls-tls"] }
 serde = "1.0.112"
-serde_json = "1.0.55"
-
-zi = { path = "/home/marius/w/zee/zi" }
-dirs = "2.0.2"
 serde_derive = "1.0.112"
+serde_json = "1.0.55"
+tempfile = "3.1.0"
+tokio = { version = "0.2.21", features = ["rt-threaded"] }
 toml = "0.5.6"
+unicode-width = "0.1.7"
+zi = "0.1.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"

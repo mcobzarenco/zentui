@@ -1,23 +1,32 @@
 mod app;
+mod credentials;
+mod edit;
+mod github;
 mod settings;
 mod zenhub;
 
 use anyhow::Result;
 use clap::Clap;
 use flexi_logger::{opt_format, Logger};
-use std::{env, path::PathBuf, rc::Rc};
-use zi::{self, layout, App as ZiApp};
+use std::path::PathBuf;
+use tokio::runtime::Builder as RuntimeBuilder;
+use zi::{self, frontend::crossterm, layout, App as ZiApp};
 
 use crate::{
     app::{App, Properties},
-    zenhub::{Client, RepoId, Token as ZenhubToken},
+    github::{Client as GithubClient, RepoFullName, Token as GithubToken},
+    zenhub::{Client as ZenhubClient, Token as ZenhubToken},
 };
 
 #[derive(Debug, Clap)]
 struct Args {
-    #[clap(name = "token")]
-    /// Open file to edit
-    token: ZenhubToken,
+    #[clap(long = "zenhub-token")]
+    /// Zenhub token to use.
+    zenhub_token: Option<ZenhubToken>,
+
+    #[clap(long = "github-token")]
+    /// Github token (a personal access token, it should have the `repo` scope enabled).
+    github_token: Option<GithubToken>,
 
     #[clap(long = "settings-path", parse(from_os_str))]
     /// Path to the configuration file. It's usually ~/.config/zee on Linux.
@@ -30,26 +39,11 @@ struct Args {
     #[clap(long = "log")]
     /// Enable debug logging to `zentui.log` file
     enable_logging: bool,
+
+    #[clap(name = "repository")]
+    /// Repository to open; the oldest existing Zenhub board will be used.
+    repository: RepoFullName,
 }
-
-// fn run_event_loop(frontend_kind: &FrontendKind, mut editor: App) -> Result<()> {
-//     match frontend_kind {
-//         #[cfg(feature = "frontend-termion")]
-//         FrontendKind::Termion => {
-//             let frontend =
-//                 zi::frontend::termion::incremental().map_err(|err| -> zi::Error { err.into() })?;
-//             editor.run_event_loop(frontend)?;
-//         }
-
-//         #[cfg(feature = "frontend-crossterm")]
-//         FrontendKind::Crossterm => {
-//             let frontend = zi::frontend::crossterm::incremental()
-//                 .map_err(|err| -> zi::Error { err.into() })?;
-//             editor.run_event_loop(frontend)?;
-//         }
-//     }
-//     Ok(())
-// }
 
 fn configure_logging() -> Result<()> {
     Logger::with_env_or_str("myprog=debug, mylib=debug")
@@ -66,7 +60,9 @@ fn start_app() -> Result<()> {
     if args.enable_logging {
         configure_logging()?;
     }
-    //     let current_dir = env::current_dir()?;
+
+    let github_token = credentials::from_arg_keyring_or_stdin(args.github_token)?;
+    let zenhub_token = credentials::from_arg_keyring_or_stdin(args.zenhub_token)?;
 
     // Read the current settings. If we cannot for any reason, we'll use the
     // default ones -- ensure the editor opens in any environment.
@@ -75,9 +71,16 @@ fn start_app() -> Result<()> {
         .or_else(|| settings::settings_path().map(Some).unwrap_or(None))
         .map_or_else(Default::default, settings::read_settings);
 
-    let client = Client::new(args.token)?;
-    let board = client.get_oldest_board(&RepoId("22101589".into()))?;
-    println!("{:?}", board);
+    let github_client = GithubClient::new(github_token)?;
+    let zenhub_client = ZenhubClient::new(zenhub_token)?;
+
+    let mut async_runtime = RuntimeBuilder::new()
+        .threaded_scheduler()
+        .enable_all()
+        .core_threads(1)
+        .build()?;
+
+    let repo = async_runtime.block_on(github_client.get_repo(&args.repository))?;
 
     //     // Create a default settings file if requested by the user
     //     if args.create_settings {
@@ -92,26 +95,21 @@ fn start_app() -> Result<()> {
     //         }
     //     }
 
-    //     // Instantiate editor and open any files specified as arguments
-    //     let context = Rc::new(Context {
-    //         args_files: args.files,
-    //         current_working_dir: current_dir,
-    //         settings,
-    //         task_pool: TaskPool::new()?,
-    //     });
     let mut app = ZiApp::new(layout::component::<App>(Properties {
-        theme: Default::default(),
-        board,
+        async_runtime: async_runtime.handle().clone(),
+        github_client: github_client.into(),
+        zenhub_client: zenhub_client.into(),
+        repo,
     }));
 
     // Start the UI loop
-    app.run_event_loop(zi::frontend::default()?);
+    app.run_event_loop(zi::frontend::crossterm::incremental()?)?;
     Ok(())
 }
 
 fn main() -> Result<()> {
     start_app().map_err(|error| {
-        log::error!("Zee exited with: {}", error);
+        log::error!("Zentui exited with: {}", error);
         error
     })
 }

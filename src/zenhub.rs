@@ -1,60 +1,29 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
+use im::Vector;
 use once_cell::sync::Lazy;
 use reqwest::{
-    blocking::Client as HttpClient,
     header::{HeaderMap, HeaderName, HeaderValue},
-    IntoUrl, Response, Url,
+    Client as HttpClient, IntoUrl, Url,
 };
 use serde::Deserialize;
 use serde_derive::Deserialize;
-use std::ops::Deref;
+use std::sync::Arc;
 
-// {
-//     "estimate": {
-//         "value": 8
-//     },
-//     "plus_ones": [
-//         {
-//             "created_at": "2015-12-11T18:43:22.296Z"
-//         }
-//     ],
-//     "pipeline": {
-//         "name": "QA",
-//         "pipeline_id": "5d0a7a9741fd098f6b7f58a7",
-//         "workspace_id": "5d0a7a9741fd098f6b7f58ac"
-//     },
-//     "pipelines": [
-//         {
-//             "name": "QA",
-//             "pipeline_id": "5d0a7a9741fd098f6b7f58a7",
-//             "workspace_id": "5d0a7a9741fd098f6b7f58ac"
-//         },
-//         {
-//             "name": "Done",
-//             "pipeline_id": "5d0a7cea41fd098f6b7f58b7",
-//             "workspace_id": "5d0a7cea41fd098f6b7f58b8"
-//         }
-//     ],
-//     "is_epic": true
-// }
+use crate::github::{IssueNumber, RepoId};
 
-// struct Estimate {
-//     value: usize,
-// }
-
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Board {
     pub pipelines: Vec<Pipeline>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Pipeline {
     pub id: String,
     pub name: String,
-    pub issues: Vec<IssueRef>,
+    pub issues: Vector<IssueRef>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct IssueRef {
     #[serde(rename = "issue_number")]
     pub number: IssueNumber,
@@ -73,17 +42,18 @@ impl Client {
     pub fn new(token: Token) -> Result<Client> {
         Ok(Client {
             endpoints: Endpoints::new(DEFAULT_ENDPOINT.clone())?,
-            http_client: build_http_client(&token)?,
+            http_client: build_http_client()?,
             headers: build_headers(&token)?,
         })
     }
 
     /// Create a new API client.
-    pub fn get_oldest_board(&self, repo_id: &RepoId) -> Result<Board> {
-        self.get::<_, Board>(self.endpoints.oldest_board(repo_id)?)
+    pub async fn get_oldest_board(self: Arc<Self>, repo_id: RepoId) -> Result<Board> {
+        self.get::<_, Board>(self.endpoints.oldest_board(&repo_id)?)
+            .await
     }
 
-    fn get<LocationT, SuccessT>(&self, url: LocationT) -> Result<SuccessT>
+    async fn get<LocationT, SuccessT>(&self, url: LocationT) -> Result<SuccessT>
     where
         LocationT: IntoUrl + std::fmt::Display,
         for<'de> SuccessT: Deserialize<'de>,
@@ -93,16 +63,18 @@ impl Client {
             .get(url)
             .headers(self.headers.clone())
             .send()
+            .await
             .with_context(|| "GET operation failed.")?
             .error_for_status()
             .with_context(|| "GET operation failed.")?
             .json::<SuccessT>()
+            .await
             .with_context(|| "Could not parse JSON response")
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Token(String);
+pub struct Token(pub String);
 
 impl std::str::FromStr for Token {
     type Err = anyhow::Error;
@@ -112,11 +84,14 @@ impl std::str::FromStr for Token {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RepoId(pub String);
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub struct IssueNumber(pub usize);
+impl<T> From<T> for Token
+where
+    T: Into<String>,
+{
+    fn from(token: T) -> Self {
+        Self(token.into())
+    }
+}
 
 #[derive(Debug)]
 struct Endpoints {
@@ -177,7 +152,7 @@ impl Endpoints {
     }
 }
 
-fn build_http_client(token: &Token) -> Result<HttpClient> {
+fn build_http_client() -> Result<HttpClient> {
     Ok(HttpClient::builder().gzip(true).build()?)
 }
 
